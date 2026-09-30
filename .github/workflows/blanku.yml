@@ -1,0 +1,66 @@
+name: PC Virtual 2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  servidor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Atualizar servidor
+        run: sudo apt update && sudo apt upgrade -y
+
+      - name: Instalar área de trabalho
+        run: |
+          sudo apt install -y xfce4 xfce4-goodies
+          sudo apt install -y dbus-x11
+
+      - name: Instalar servidor VNC
+        run: |
+          sudo apt install -y tigervnc-standalone-server
+          sudo apt install -y tigervnc-common
+
+      - name: Criar usuário
+        run: |
+          sudo useradd -m gamer || true
+          echo "gamer:gamer" | sudo chpasswd
+          sudo usermod -aG sudo gamer
+
+      - name: Configurar VNC
+        run: |
+          sudo -u gamer mkdir -p /home/gamer/.vnc
+          echo "xfce4-session" | sudo tee /home/gamer/.vnc/xstartup
+          sudo chmod +x /home/gamer/.vnc/xstartup
+          sudo chown -R gamer:gamer /home/gamer/.vnc
+
+      - name: Instalar Ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc |
+            sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" |
+            sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update
+          sudo apt install -y ngrok
+
+      - name: Iniciar VNC como gamer
+        run: |
+          sudo -u gamer mkdir -p /home/gamer/.vnc
+          sudo chmod 600 /home/gamer/.vnc/passwd
+          sudo -u gamer vncserver :1 -geometry 1280x720 -depth 24
+
+      - name: Iniciar túnel
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok tcp 5901 > ngrok.log 2>&1 &
+          sleep 5
+          curl -s http://127.0.0.1:4040/api/tunnels
+
+      - name: Manter servidor
+        run: |
+          echo "Servidor VNC iniciado."
+          echo "A sessão permanecerá ativa enquanto este job estiver executando."
+          sleep infinity
