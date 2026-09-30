@@ -1,0 +1,56 @@
+name: Virtual PC Online
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_password:
+        description: 'Defina uma senha para o usuário (ou deixe padrão)'
+        required: true
+        default: '123456'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # Mantém a máquina ligada por até 6 horas
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configurar Senha do Usuário
+        run: |
+          echo "runner:${{ github.event.inputs.access_password }}" | sudo chpasswd
+          sudo usermod -aG sudo runner
+
+      - name: Instalar Servidor de Área de Trabalho e Ferramentas
+        run: |
+          sudo apt update
+          sudo apt install -y xfce4 xfce4-goodies tightvncserver wget curl unzip
+
+      - name: Instalar e Autenticar o Ngrok Nativamente
+        run: |
+          # Baixa o binário oficial compacto para Linux de 64 bits
+          wget -q https://equinox.io
+          
+          # Desempacota o Ngrok e o move para a pasta global de comandos do sistema
+          sudo unzip -o ngrok-stable-linux-amd64.zip -d /usr/local/bin/
+          
+          # Autentica usando o seu Secret cadastrado no GitHub
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+
+      - name: Iniciar Servidor VNC
+        run: |
+          vncserver :1 -geometry 1280x720 -depth 24 &
+          echo "VNC iniciado na porta 5901"
+
+      - name: Expor VNC via Ngrok (TCP)
+        run: |
+          # Inicia o túnel TCP na porta 5901 e salva em background
+          ngrok tcp 5901 --log=stdout &
+          sleep 5 # Aguarda o túnel carregar de forma estável
+
+      - name: Manter a Máquina Ativa
+        run: |
+          echo "PC Virtual pronto!"
+          echo "Acesse o painel do Ngrok (https://ngrok.com) na aba 'Endpoints' para pegar o endereço IP e a Porta gerados."
+          sleep infinity
