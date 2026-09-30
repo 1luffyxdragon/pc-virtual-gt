@@ -1,0 +1,98 @@
+name: PC Virtual - VNC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  servidor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: 01 - Atualizar servidor
+        run: |
+          sudo apt update
+          sudo apt upgrade -y
+
+      - name: 02 - Instalar área de trabalho
+        run: |
+          sudo apt install -y xfce4 xfce4-goodies
+          sudo apt install -y dbus-x11
+
+      - name: 03 - Instalar servidor VNC
+        run: |
+          sudo apt install -y tigervnc-standalone-server
+          sudo apt install -y tigervnc-common
+
+      - name: 04 - Criar usuário
+        run: |
+          sudo useradd -m -s /bin/bash gamer || true
+          echo "gamer:gamer" | sudo chpasswd
+          sudo usermod -aG sudo gamer
+
+      - name: 05 - Configurar área de trabalho
+        run: |
+          sudo -u gamer mkdir -p /home/gamer/.vnc
+          
+          # CORREÇÃO DO ERRO 1: Define de antemão a senha 'gamer' para o VNC
+          echo "gamer" | vncpasswd -f > /tmp/passwd
+          sudo mv /tmp/passwd /home/gamer/.vnc/passwd
+          sudo chmod 600 /home/gamer/.vnc/passwd
+          
+          # Inicia a interface gráfica
+          echo "startxfce4" | sudo tee /home/gamer/.vnc/xstartup
+          sudo chmod +x /home/gamer/.vnc/xstartup
+          
+          # Garante as permissões corretas para o usuário gamer
+          sudo chown -R gamer:gamer /home/gamer/.vnc
+
+      - name: 06 - Instalar ferramentas
+        run: |
+          sudo apt install -y curl wget unzip net-tools
+
+      - name: 07 - Instalar Ngrok
+        run: |
+          curl -s https://amazonaws.com \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://amazonaws.com bookworm main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update
+          sudo apt install -y ngrok
+
+      - name: 08 - Configurar Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          ngrok config add-authtoken "$NGROK_TOKEN"
+
+      - name: 09 - Iniciar servidor VNC
+        run: |
+          # CORREÇÃO DO ERRO 1: Limpa sessões fantasmas e arquivos temporários de travas
+          sudo -u gamer vncserver -kill :1 || true
+          sudo rm -f /tmp/.X11-unix/X1 /tmp/.X1-lock || true
+          
+          sudo -u gamer vncserver :1 \
+            -geometry 1280x720 \
+            -depth 24
+
+      - name: 10 - Verificar VNC
+        run: |
+          sleep 3
+          ss -lntp | grep 5901 || true
+
+      - name: 11 - Iniciar túnel
+        run: |
+          nohup ngrok tcp 5901 > /tmp/ngrok.log 2>&1 &
+          sleep 8
+
+      - name: 12 - Mostrar conexão
+        run: |
+          curl -s http://127.0.0 \
+
+            | python3 -m json.tool || true
+
+      - name: 13 - Manter servidor ativo
+        run: |
+          echo "PC virtual iniciado."
+          echo "O servidor ficará ativo enquanto este workflow estiver executando."
+          sleep infinity
