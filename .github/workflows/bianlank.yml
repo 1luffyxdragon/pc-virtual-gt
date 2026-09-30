@@ -1,0 +1,99 @@
+name: Virtual
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_password:
+        description: 'Defina uma senha para o usuário (ou deixe padrão)'
+        required: true
+        default: '123456'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Repositório de Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Senha do Usuário
+        run: |
+          echo "runner:${{ github.event.inputs.access_password }}" | sudo chpasswd
+          sudo usermod -aG sudo runner
+
+      - name: Instalar Servidor de Área de Trabalho e Ferramentas
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xrdp \
+            dbus-x11 \
+            wget \
+            curl \
+            ca-certificates
+
+      - name: Configurar RDP
+        run: |
+          echo "xfce4-session" | sudo tee /home/runner/.xsession
+          sudo chown runner:runner /home/runner/.xsession
+
+          sudo usermod -aG ssl-cert xrdp
+
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+      - name: Instalar Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Conectar ao Tailscale
+        env:
+          TAILSSCALE_AUTH_KEY: ${{ secrets.TAILSSCALE_AUTH_KEY }}
+        run: |
+          sudo tailscale up \
+            --auth-key="$TAILSSCALE_AUTH_KEY" \
+            --hostname="virtual-pc-${{ github.run_id }}"
+
+          echo "Tailscale conectado com sucesso."
+
+      - name: Manter a Máquina Ativa
+        run: |
+          TAILSCALE_IP=$(sudo tailscale ip -4)
+
+          echo ""
+          echo "============================================================"
+          echo "                  VIRTUAL PC ONLINE"
+          echo "============================================================"
+          echo ""
+          echo "Nome:              Virtual PC Online"
+          echo "Nome amigável:     Virtual PC Online"
+          echo "Usuário:           runner"
+          echo "Senha:             ${{ github.event.inputs.access_password }}"
+          echo "PC / Host:         $TAILSCALE_IP:3389"
+          echo "Gateway:           $TAILSCALE_IP:3389"
+          echo ""
+          echo "============================================================"
+          echo "                    WINDOWS APP"
+          echo "============================================================"
+          echo ""
+          echo "PC:                $TAILSCALE_IP:3389"
+          echo "Gateway:           $TAILSCALE_IP:3389"
+          echo "Usuário:           runner"
+          echo "Senha:             ${{ github.event.inputs.access_password }}"
+          echo "Nome amigável:     Virtual PC Online"
+          echo ""
+          echo "============================================================"
+          echo "                    CONEXÃO"
+          echo "============================================================"
+          echo ""
+          echo "Tailscale IP:      $TAILSCALE_IP"
+          echo "RDP:               $TAILSCALE_IP:3389"
+          echo "Porta RDP:         3389"
+          echo ""
+          echo "A máquina permanecerá ativa."
+          echo "============================================================"
+
+          sleep infinity
