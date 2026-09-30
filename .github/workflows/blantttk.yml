@@ -1,0 +1,62 @@
+name: Windows Virtual PC - Roblox Funcional
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: 01 - Instalar e Configurar Tailscale
+        shell: pwsh
+        env:
+          TS_KEY: \${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "ts-setup.exe"
+          Start-Process -FilePath ".\ts-setup.exe" -ArgumentList "/quiet" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "\$env:TS_KEY" --accept-routes
+          \$tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
+          echo "TAILSCALE_IP=tsIP" >> env:GITHUB_ENV
+
+      - name: 02 - Habilitar Acesso Remoto e Criar Usuário
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          \$Password = ConvertTo-SecureString "Gamer1234!" -AsPlainText -Force
+          New-LocalUser "gamer" -Password \$Password -Description "Usuario Gamer"
+          Add-LocalGroupMember -Group "Administrators" -Member "gamer"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "gamer"
+
+      - name: 03 - Ativar Placa de Vídeo por Software para o Roblox
+        shell: pwsh
+        run: |
+          # Baixa o Mesa3D (Mesa3D-D3D12), que traduz os gráficos do Roblox para o processador da VM
+          Invoke-WebRequest -Uri "https://github.com" -OutFile "mesa3d.7z"
+          
+          # Instala o descompactador e extrai os drivers de vídeo virtuais
+          choco install 7zip -y
+          & "C:\Program Files\7-Zip\7z.exe" x mesa3d.7z -o"C:\mesa3d" -y
+          
+          # Copia a placa de vídeo virtual (opengl32.dll) para a pasta do sistema para o Roblox reconhecer gráficos 3D
+          Copy-Item "C:\mesa3d\x64\opengl32.dll" -Destination "C:\Windows\System32\" -Force
+          Write-Host "Driver de vídeo virtual instalado com sucesso!"
+
+      - name: Maintain Connection
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 5
+          
+          Write-Host "`n================================================"
+          Write-Host "🚀 SEU WINDOWS COM PLACA DE VÍDEO VIRTUAL PRONTO!"
+          Write-Host "🔗 ENDEREÇO (Computer IP): $env:TAILSCALE_IP"
+          Write-Host "👤 USUÁRIO (Username): gamer"
+          Write-Host "🔒 SENHA (Password): Gamer1234!"
+          Write-Host "================================================`n"
+          
+          while (\$true) {
+              Write-Host "[\$(Get-Date)] Windows Ativo - Conecte pelo Windows App no Celular"
+              Start-Sleep -Seconds 300
+          }
