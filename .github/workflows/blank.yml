@@ -1,0 +1,334 @@
+name: Virtual PC Windows 10
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_password:
+        description: 'Defina uma senha para o Windows'
+        required: true
+        default: '12345678'
+
+jobs:
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Instalar ferramentas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            xorriso \
+            curl \
+            wget
+
+          python3 -m pip install --user --break-system-packages gdown
+
+      - name: Instalar Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo systemctl enable --now tailscaled
+
+      - name: Baixar Windows 10
+        run: |
+          mkdir -p ~/windows10
+
+          ~/.local/bin/gdown \
+            "1rakYlN7p6m3feNrxTzF3QL4sm9cKjQ_K" \
+            -O ~/windows10/Win10.iso
+
+          ls -lh ~/windows10/Win10.iso
+
+      - name: Criar disco Windows
+        run: |
+          qemu-img create \
+            -f qcow2 \
+            ~/windows10/windows10.qcow2 \
+            64G
+
+      - name: Criar instalação automática
+        env:
+          PASSWORD: ${{ github.event.inputs.access_password }}
+        run: |
+          python3 <<'PY'
+          import os
+          from xml.sax.saxutils import escape
+
+          password = escape(os.environ["PASSWORD"])
+
+          xml = f'''<?xml version="1.0" encoding="utf-8"?>
+          <unattend xmlns="urn:schemas-microsoft-com:unattend"
+          xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+            <settings pass="windowsPE">
+
+              <component
+                name="Microsoft-Windows-Setup"
+                processorArchitecture="amd64"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <DiskConfiguration>
+                  <Disk wcm:action="add">
+                    <DiskID>0</DiskID>
+                    <WillWipeDisk>true</WillWipeDisk>
+
+                    <CreatePartitions>
+                      <CreatePartition wcm:action="add">
+                        <Order>1</Order>
+                        <Type>Primary</Type>
+                        <Extend>true</Extend>
+                      </CreatePartition>
+                    </CreatePartitions>
+
+                    <ModifyPartitions>
+                      <ModifyPartition wcm:action="add">
+                        <Order>1</Order>
+                        <PartitionID>1</PartitionID>
+                        <Format>NTFS</Format>
+                        <Label>Windows</Label>
+                        <Letter>C</Letter>
+                      </ModifyPartition>
+                    </ModifyPartitions>
+                  </Disk>
+                </DiskConfiguration>
+
+                <ImageInstall>
+                  <OSImage>
+                    <InstallFrom>
+                      <MetaData
+                        wcm:action="add"
+                        wcm:keyValue="/IMAGE/INDEX">4</MetaData>
+                    </InstallFrom>
+
+                    <InstallTo>
+                      <DiskID>0</DiskID>
+                      <PartitionID>1</PartitionID>
+                    </InstallTo>
+
+                    <WillShowUI>OnError</WillShowUI>
+                  </OSImage>
+                </ImageInstall>
+
+                <UserData>
+                  <AcceptEula>true</AcceptEula>
+                  <FullName>runner</FullName>
+                  <Organization>Virtual PC</Organization>
+                  <ProductKey>
+                    <Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>
+                    <WillShowUI>Never</WillShowUI>
+                  </ProductKey>
+                </UserData>
+
+              </component>
+
+            </settings>
+
+            <settings pass="specialize">
+
+              <component
+                name="Microsoft-Windows-Shell-Setup"
+                processorArchitecture="amd64"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <ComputerName>VIRTUALPC</ComputerName>
+
+              </component>
+
+              <component
+                name="Microsoft-Windows-Deployment"
+                processorArchitecture="amd64"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <RunSynchronous>
+
+                  <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"</Path>
+                  </RunSynchronousCommand>
+
+                  <RunSynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0"</Path>
+                  </RunSynchronousCommand>
+
+                  <RunSynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Service TermService -StartupType Automatic"</Path>
+                  </RunSynchronousCommand>
+
+                  <RunSynchronousCommand wcm:action="add">
+                    <Order>4</Order>
+                    <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Service UmRdpService -StartupType Automatic"</Path>
+                  </RunSynchronousCommand>
+
+                  <RunSynchronousCommand wcm:action="add">
+                    <Order>5</Order>
+                    <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"</Path>
+                  </RunSynchronousCommand>
+
+                </RunSynchronous>
+
+              </component>
+
+            </settings>
+
+            <settings pass="oobeSystem">
+
+              <component
+                name="Microsoft-Windows-Shell-Setup"
+                processorArchitecture="amd64"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <OOBE>
+                  <HideEULAPage>true</HideEULAPage>
+                  <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                  <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                  <ProtectYourPC>3</ProtectYourPC>
+                </OOBE>
+
+                <UserAccounts>
+                  <LocalAccounts>
+
+                    <LocalAccount wcm:action="add">
+                      <Name>runner</Name>
+                      <DisplayName>runner</DisplayName>
+                      <Description>Virtual PC User</Description>
+                      <Group>Administrators</Group>
+
+                      <Password>
+                        <Value>{password}</Value>
+                        <PlainText>true</PlainText>
+                      </Password>
+
+                    </LocalAccount>
+
+                  </LocalAccounts>
+                </UserAccounts>
+
+                <AutoLogon>
+                  <Enabled>true</Enabled>
+                  <Username>runner</Username>
+                  <LogonCount>5</LogonCount>
+
+                  <Password>
+                    <Value>{password}</Value>
+                    <PlainText>true</PlainText>
+                  </Password>
+                </AutoLogon>
+
+              </component>
+
+            </settings>
+
+          </unattend>
+          '''
+
+          with open(os.path.expanduser("~/windows10/Autounattend.xml"), "w") as f:
+              f.write(xml)
+          PY
+
+          echo "Autounattend criado."
+
+      - name: Inserir Autounattend na ISO
+        run: |
+          cd ~/windows10
+
+          xorriso \
+            -indev Win10.iso \
+            -outdev Win10-auto.iso \
+            -map Autounattend.xml /Autounattend.xml \
+            -boot_image any keep \
+            -commit
+
+          mv Win10-auto.iso Win10-final.iso
+
+          ls -lh Win10-final.iso
+
+      - name: Iniciar Windows
+        run: |
+          cd ~/windows10
+
+          qemu-system-x86_64 \
+            -accel tcg \
+            -machine q35 \
+            -cpu max \
+            -smp 4 \
+            -m 16G \
+            -drive file=windows10.qcow2,format=qcow2,if=ide \
+            -drive file=Win10-final.iso,media=cdrom,readonly=on \
+            -boot once=d \
+            -nic user,model=e1000,hostfwd=tcp:0.0.0.0:3389-:3389 \
+            -display none \
+            -daemonize \
+            -pidfile windows10.pid
+
+          echo "Windows 10 iniciado."
+          echo "A instalação automática está em andamento."
+
+      - name: Conectar Tailscale
+        env:
+          TAILSSCALE_AUTH_KEY: ${{ secrets.TAILSSCALE_AUTH_KEY }}
+        run: |
+          sudo tailscale up \
+            --auth-key="$TAILSSCALE_AUTH_KEY" \
+            --hostname="windows10-${{ github.run_id }}"
+
+          sudo tailscale status
+
+      - name: Aguardar Windows ficar pronto
+        run: |
+          echo "Aguardando a instalação do Windows..."
+
+          for i in $(seq 1 60); do
+
+            if nc -z 127.0.0.1 3389 2>/dev/null; then
+              echo "Porta 3389 disponível."
+            fi
+
+            sleep 30
+
+          done
+
+      - name: Manter a Máquina Ativa
+        run: |
+          IP=$(sudo tailscale ip -4)
+
+          echo ""
+          echo "============================================"
+          echo "       VIRTUAL PC WINDOWS 10"
+          echo "============================================"
+          echo "Nome:          Virtual PC Windows 10"
+          echo "Sistema:       Windows 10 Pro"
+          echo "Usuário:       runner"
+          echo "Senha:         ${{ github.event.inputs.access_password }}"
+          echo "PC / Host:     $IP"
+          echo "Tailscale IP:  $IP"
+          echo "RDP:           $IP:3389"
+          echo "CPU:           4 vCPUs"
+          echo "RAM:           16 GB"
+          echo "============================================"
+          echo ""
+          echo "WINDOWS APP"
+          echo "--------------------------------------------"
+          echo "Nome do computador: $IP"
+          echo "Conta:              runner"
+          echo "Senha:              ${{ github.event.inputs.access_password }}"
+          echo "Nome amigável:      Virtual PC Windows 10"
+          echo "Gateway:            Nenhum gateway"
+          echo "--------------------------------------------"
+          echo ""
+          echo "A VM permanecerá ativa."
+          echo ""
+
+          sleep infinity
