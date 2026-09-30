@@ -1,0 +1,347 @@
+name: Virtual PC Windows 
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_password:
+        description: 'Senha do Windows'
+        required: true
+        default: '12345678'
+
+jobs:
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Instalar ferramentas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            genisoimage \
+            curl \
+            netcat-openbsd \
+            wimtools
+          python3 -m pip install --user --break-system-packages gdown
+
+      - name: Instalar Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo systemctl enable --now tailscaled
+
+      - name: Baixar Windows 10
+        run: |
+          mkdir -p ~/windows10
+
+          ~/.local/bin/gdown \
+            "1rakYlN7p6m3feNrxTzF3QL4sm9cKjQ_K" \
+            -O ~/windows10/Win10.iso
+
+          ls -lh ~/windows10/Win10.iso
+
+      - name: Detectar edição do Windows
+        run: |
+          sudo mkdir -p /mnt/winiso
+          sudo mount -o loop,ro ~/windows10/Win10.iso /mnt/winiso
+
+          if [ -f /mnt/winiso/sources/install.wim ]; then
+            IMAGE="/mnt/winiso/sources/install.wim"
+          elif [ -f /mnt/winiso/sources/install.esd ]; then
+            IMAGE="/mnt/winiso/sources/install.esd"
+          else
+            echo "ERRO: install.wim/install.esd não encontrado."
+            find /mnt/winiso/sources -maxdepth 1 -type f | sort
+            sudo umount /mnt/winiso
+            exit 1
+          fi
+
+          echo "Imagem encontrada: $IMAGE"
+          echo ""
+          echo "Edições encontradas:"
+          wimlib-imagex info "$IMAGE"
+
+          INDEX=$(wimlib-imagex info "$IMAGE" | \
+            awk '
+              /^Index:/ { index=$2 }
+              /Name: Windows 10 Pro/ { print index; exit }
+            ')
+
+          if [ -z "$INDEX" ]; then
+            echo ""
+            echo "Windows 10 Pro não encontrada."
+            echo "Edições disponíveis:"
+            wimlib-imagex info "$IMAGE" | grep -E "^(Index:|Name:)"
+            sudo umount /mnt/winiso
+            exit 1
+          fi
+
+          echo ""
+          echo "Índice Windows 10 Pro: $INDEX"
+
+          echo "$INDEX" > ~/windows10/index.txt
+
+          sudo umount /mnt/winiso
+
+      - name: Criar disco
+        run: |
+          qemu-img create \
+            -f qcow2 \
+            ~/windows10/windows10.qcow2 \
+            64G
+
+      - name: Criar configuração Windows
+        env:
+          PASSWORD: ${{ github.event.inputs.access_password }}
+        run: |
+          INDEX=$(cat ~/windows10/index.txt)
+
+          mkdir -p ~/windows10/auto
+
+          cat > ~/windows10/auto/Autounattend.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <unattend xmlns="urn:schemas-microsoft-com:unattend"
+          xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+          <settings pass="windowsPE">
+
+            <component
+              name="Microsoft-Windows-Setup"
+              processorArchitecture="amd64"
+              publicKeyToken="31bf3856ad364e35"
+              language="neutral"
+              versionScope="nonSxS">
+
+              <DiskConfiguration>
+                <Disk wcm:action="add">
+                  <DiskID>0</DiskID>
+                  <WillWipeDisk>true</WillWipeDisk>
+
+                  <CreatePartitions>
+                    <CreatePartition wcm:action="add">
+                      <Order>1</Order>
+                      <Type>Primary</Type>
+                      <Extend>true</Extend>
+                    </CreatePartition>
+                  </CreatePartitions>
+
+                  <ModifyPartitions>
+                    <ModifyPartition wcm:action="add">
+                      <Order>1</Order>
+                      <PartitionID>1</PartitionID>
+                      <Format>NTFS</Format>
+                      <Label>Windows</Label>
+                      <Letter>C</Letter>
+                    </ModifyPartition>
+                  </ModifyPartitions>
+
+                </Disk>
+              </DiskConfiguration>
+
+              <ImageInstall>
+                <OSImage>
+                  <InstallFrom>
+                    <MetaData
+                      wcm:action="add"
+                      wcm:keyValue="/IMAGE/INDEX">$INDEX</MetaData>
+                  </InstallFrom>
+
+                  <InstallTo>
+                    <DiskID>0</DiskID>
+                    <PartitionID>1</PartitionID>
+                  </InstallTo>
+
+                  <WillShowUI>OnError</WillShowUI>
+                </OSImage>
+              </ImageInstall>
+
+              <UserData>
+                <AcceptEula>true</AcceptEula>
+                <FullName>runner</FullName>
+                <Organization>Virtual PC</Organization>
+              </UserData>
+
+            </component>
+
+            <component
+              name="Microsoft-Windows-International-Core-WinPE"
+              processorArchitecture="amd64"
+              publicKeyToken="31bf3856ad364e35"
+              language="neutral"
+              versionScope="nonSxS">
+
+              <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+              </SetupUILanguage>
+
+              <InputLocale>en-US</InputLocale>
+              <SystemLocale>en-US</SystemLocale>
+              <UILanguage>en-US</UILanguage>
+              <UserLocale>en-US</UserLocale>
+
+            </component>
+
+          </settings>
+
+          <settings pass="oobeSystem">
+
+            <component
+              name="Microsoft-Windows-Shell-Setup"
+              processorArchitecture="amd64"
+              publicKeyToken="31bf3856ad364e35"
+              language="neutral"
+              versionScope="nonSxS">
+
+              <ComputerName>VIRTUALPC</ComputerName>
+
+              <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Work</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+              </OOBE>
+
+              <UserAccounts>
+                <LocalAccounts>
+
+                  <LocalAccount wcm:action="add">
+                    <Name>runner</Name>
+                    <DisplayName>runner</DisplayName>
+                    <Description>Virtual PC User</Description>
+                    <Group>Administrators</Group>
+
+                    <Password>
+                      <Value>$PASSWORD</Value>
+                      <PlainText>true</PlainText>
+                    </Password>
+
+                  </LocalAccount>
+
+                </LocalAccounts>
+              </UserAccounts>
+
+              <AutoLogon>
+                <Enabled>true</Enabled>
+                <Username>runner</Username>
+                <LogonCount>5</LogonCount>
+
+                <Password>
+                  <Value>$PASSWORD</Value>
+                  <PlainText>true</PlainText>
+                </Password>
+
+              </AutoLogon>
+
+              <FirstLogonCommands>
+
+                <SynchronousCommand wcm:action="add">
+                  <Order>1</Order>
+                  <Description>Enable RDP</Description>
+                  <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0"</CommandLine>
+                </SynchronousCommand>
+
+                <SynchronousCommand wcm:action="add">
+                  <Order>2</Order>
+                  <Description>Enable RDP Firewall</Description>
+                  <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"</CommandLine>
+                </SynchronousCommand>
+
+                <SynchronousCommand wcm:action="add">
+                  <Order>3</Order>
+                  <Description>Start RDP</Description>
+                  <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Service -Name TermService -StartupType Automatic; Start-Service -Name TermService"</CommandLine>
+                </SynchronousCommand>
+
+              </FirstLogonCommands>
+
+            </component>
+
+          </settings>
+
+          </unattend>
+          EOF
+
+          genisoimage \
+            -quiet \
+            -o ~/windows10/auto.iso \
+            -J \
+            -r \
+            ~/windows10/auto/Autounattend.xml
+
+      - name: Iniciar Windows
+        run: |
+          cd ~/windows10
+
+          qemu-system-x86_64 \
+            -accel tcg \
+            -machine q35 \
+            -cpu max \
+            -smp 4 \
+            -m 16G \
+            -drive file=windows10.qcow2,format=qcow2,if=ide \
+            -drive file=Win10.iso,media=cdrom,readonly=on \
+            -drive file=auto.iso,media=cdrom,readonly=on \
+            -boot order=d \
+            -device e1000,netdev=n \
+            -netdev user,id=n,hostfwd=tcp:0.0.0.0:3389-:3389 \
+            -display none \
+            -daemonize \
+            -pidfile windows10.pid
+
+      - name: Conectar Tailscale
+        env:
+          TAILSSCALE_AUTH_KEY: ${{ secrets.TAILSSCALE_AUTH_KEY }}
+        run: |
+          sudo tailscale up \
+            --auth-key="$TAILSSCALE_AUTH_KEY" \
+            --hostname="windows10-${{ github.run_id }}"
+
+      - name: Aguardar RDP
+        run: |
+          echo "Aguardando Windows 10..."
+
+          for i in $(seq 1 120); do
+            if nc -z 127.0.0.1 3389; then
+              echo "RDP disponível."
+              exit 0
+            fi
+
+            echo "Tentativa $i/120..."
+            sleep 30
+          done
+
+          echo "RDP não ficou disponível."
+
+          echo "QEMU:"
+          ps aux | grep qemu | grep -v grep || true
+
+          echo "Tailscale:"
+          sudo tailscale status || true
+
+          exit 1
+
+      - name: Manter a Máquina Ativa
+        run: |
+          IP=$(sudo tailscale ip -4)
+
+          echo ""
+          echo "============================================"
+          echo "       VIRTUAL PC WINDOWS 10"
+          echo "============================================"
+          echo "Nome:          Virtual PC Windows 10"
+          echo "Sistema:       Windows 10"
+          echo "Usuário:       runner"
+          echo "Senha:         ${{ github.event.inputs.access_password }}"
+          echo "PC / Host:     $IP"
+          echo "Tailscale IP:  $IP"
+          echo "RDP:           $IP:3389"
+          echo "CPU:           4 vCPUs"
+          echo "RAM:           16 GB"
+          echo "============================================"
+          echo ""
+          echo "Use o PC / Host no Windows App."
+
+          sleep infinity
