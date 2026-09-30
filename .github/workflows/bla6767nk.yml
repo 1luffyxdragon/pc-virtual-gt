@@ -1,0 +1,235 @@
+name: Virtual PC Online3
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_password:
+        description: 'Defina a senha do usuário madi'
+        required: true
+        default: '12345'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Repositório de Checkout
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # USUÁRIO
+      # ==========================================================
+
+      - name: Configurar Usuário madi
+        run: |
+          sudo usermod -l madi runner
+          sudo usermod -d /home/madi -m madi
+          echo "madi:${{ github.event.inputs.access_password }}" | sudo chpasswd
+          sudo usermod -aG sudo madi
+
+          echo "Usuário configurado: madi"
+
+      # ==========================================================
+      # XFCE + VNC
+      # ==========================================================
+
+      - name: Instalar Servidor de Área de Trabalho e Ferramentas
+        run: |
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            tightvncserver \
+            dbus-x11 \
+            wget \
+            curl \
+            ca-certificates
+
+      # ==========================================================
+      # TAILSCALE
+      # ==========================================================
+
+      - name: Instalar Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Conectar ao Tailscale
+        env:
+          TAILSSCALE_AUTHKEY: ${{ secrets.TAILSSCALE_AUTHKEY }}
+        run: |
+          if [ -z "$TAILSSCALE_AUTHKEY" ]; then
+            echo "ERRO: TAILSSCALE_AUTHKEY não foi encontrada."
+            echo "Verifique:"
+            echo "Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
+          echo "Chave Tailscale encontrada."
+
+          sudo tailscale up \
+            --auth-key="$TAILSSCALE_AUTHKEY" \
+            --hostname="virtual-pc-${{ github.run_id }}"
+
+          echo ""
+          echo "Tailscale conectado com sucesso."
+
+      - name: Mostrar IP do Tailscale
+        run: |
+          echo "=========================================="
+          echo "          TAILSCALE CONECTADO"
+          echo "=========================================="
+          echo ""
+
+          echo "IPv4:"
+          sudo tailscale ip -4
+
+          echo ""
+          echo "Status:"
+          sudo tailscale status --self
+
+          echo ""
+          echo "=========================================="
+
+      # ==========================================================
+      # CONFIGURAR VNC
+      # ==========================================================
+
+      - name: Configurar VNC e XFCE
+        env:
+          VNC_PASSWORD: ${{ github.event.inputs.access_password }}
+        run: |
+          mkdir -p ~/.vnc
+
+          echo "$VNC_PASSWORD" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+
+          cat > ~/.vnc/xstartup <<'EOF'
+          #!/bin/sh
+
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_DESKTOP=xfce
+          export DESKTOP_SESSION=xfce
+
+          dbus-launch --exit-with-session startxfce4 &
+          EOF
+
+          chmod +x ~/.vnc/xstartup
+
+      - name: Iniciar Servidor VNC
+        run: |
+          vncserver -kill :1 >/dev/null 2>&1 || true
+
+          vncserver :1 \
+            -geometry 1280x720 \
+            -depth 24 \
+            -localhost no
+
+          echo "=========================================="
+          echo "VNC iniciado"
+          echo "Porta: 5901"
+          echo "Resolução: 1280x720"
+          echo "=========================================="
+
+      # ==========================================================
+      # NGROK
+      # ==========================================================
+
+      - name: Instalar o Ngrok
+        run: |
+          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+
+          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y ngrok
+
+      - name: Configurar Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          if [ -z "$NGROK_TOKEN" ]; then
+            echo "ERRO: NGROK_TOKEN não foi encontrada."
+            exit 1
+          fi
+
+          ngrok config add-authtoken "$NGROK_TOKEN"
+
+          echo "Ngrok configurado."
+
+      - name: Expor VNC via Ngrok
+        run: |
+          nohup ngrok tcp 5901 > /tmp/ngrok.log 2>&1 &
+
+          sleep 5
+
+          echo "=========================================="
+          echo "             NGROK"
+          echo "=========================================="
+
+          cat /tmp/ngrok.log || true
+
+          echo "=========================================="
+
+      # ==========================================================
+      # INFORMAÇÕES DE ACESSO
+      # ==========================================================
+
+      - name: Mostrar Informações de Acesso
+        run: |
+          TAILSCALE_IP=$(sudo tailscale ip -4)
+
+          echo ""
+          echo "================================================"
+          echo "              VIRTUAL PC ONLINE"
+          echo "================================================"
+          echo ""
+          echo "USUÁRIO:"
+          echo "madi"
+          echo ""
+          echo "SENHA:"
+          echo "A senha definida no workflow"
+          echo ""
+          echo "------------------------------------------------"
+          echo "TAILSCALE"
+          echo "------------------------------------------------"
+          echo ""
+          echo "IP Tailscale:"
+          echo "$TAILSCALE_IP"
+          echo ""
+          echo "VNC pelo Tailscale:"
+          echo "$TAILSCALE_IP:5901"
+          echo ""
+          echo "------------------------------------------------"
+          echo "NGROK"
+          echo "------------------------------------------------"
+          echo ""
+          echo "Endereço TCP:"
+          cat /tmp/ngrok.log || true
+          echo ""
+          echo "================================================"
+
+      # ==========================================================
+      # MANTER ATIVO
+      # ==========================================================
+
+      - name: Manter a Máquina Ativa
+        run: |
+          echo "=========================================="
+          echo "PC Virtual pronto!"
+          echo ""
+          echo "Tailscale: ATIVO"
+          echo "VNC: ATIVO"
+          echo "Ngrok: ATIVO"
+          echo ""
+          echo "A máquina permanecerá ativa."
+          echo "=========================================="
+
+          sleep infinity
