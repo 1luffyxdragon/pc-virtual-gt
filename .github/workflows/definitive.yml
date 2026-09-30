@@ -1,0 +1,127 @@
+name: PC Virtual - Windows App (Ngrok + Tailscale)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  servidor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: 01 - Atualizar servidor
+        run: |
+          sudo apt update
+          sudo apt upgrade -y
+
+      - name: 02 - Instalar interface grafica e Servidor RDP (Nativo do Windows)
+        run: |
+          # Instala a interface visual leve e o XRDP (protocolo que o Windows App usa)
+          sudo apt install -y xfce4 xfce4-goodies xrdp dbus-x11
+          
+          # Configura o RDP para iniciar a interface XFCE por padrao
+          echo "startxfce4" | sudo tee /etc/xrdp/startwm.sh
+          sudo systemctl restart xrdp
+
+      - name: 03 - Criar usuário e senha para o Windows
+        run: |
+          # Cria o usuário 'gamer' com a senha 'gamer'
+          sudo useradd -m -s /bin/bash gamer || true
+          echo "gamer:gamer" | sudo chpasswd
+          sudo usermod -aG sudo gamer
+
+      - name: 04 - Instalar ferramentas do sistema
+        run: |
+          sudo apt install -y curl wget unzip net-tools jq
+
+      - name: 05 - Instalar e Configurar Oficial Ngrok Agent
+        run: |
+          # Instala o repositório oficial do Ngrok
+          curl -s https://amazonaws.com \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://amazonaws.com bookworm main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install -y ngrok
+          
+          # Autentica o Ngrok com seu Token dos Secrets
+          if [ -z "${{ secrets.NGROK_TOKEN }}" ]; then
+            echo "AVISO: NGROK_TOKEN nao configurado nos Secrets!"
+          else
+            ngrok config add-authtoken "${{ secrets.NGROK_TOKEN }}"
+          fi
+
+      - name: 06 - Instalar e Configurar Oficial Tailscale Agent
+        run: |
+          # Instala o Tailscale via script oficial
+          curl -fsSL https://tailscale.com | sh
+          
+          # Autentica no seu painel Tailscale com sua Auth Key dos Secrets
+          if [ -z "${{ secrets.TAILSCALE_AUTHKEY }}" ]; then
+            echo "AVISO: TAILSCALE_AUTHKEY nao configurado nos Secrets!"
+          else
+            sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" --accept-routes
+          fi
+
+      - name: 07 - Iniciar túnel Ngrok (Porta RDP 3389)
+        run: |
+          # Dispara o túnel do Ngrok direcionado para o Windows App em segundo plano
+          if [ ! -z "${{ secrets.NGROK_TOKEN }}" ]; then
+            nohup ngrok tcp 3389 > /tmp/ngrok.log 2>&1 &
+            sleep 10
+          fi
+
+      - name: Maintain Connection (Painel Geral de Acesso)
+        run: |
+          echo "Processando credenciais de rede..."
+          
+          # 1. Tenta capturar o link do Ngrok se ele foi ativado
+          RDP_Link=""
+          if [ ! -z "${{ secrets.NGROK_TOKEN }}" ]; then
+            for i in {1..5}; do
+              RDP_Link=$(curl -s http://127.0.0 | jq -r '.tunnels.public_url')
+              [ ! -z "$RDP_Link" ] && [ "$RDP_Link" != "null" ] && break
+              sleep 2
+            done
+            if [ -z "$RDP_Link" ] || [ "$RDP_Link" == "null" ]; then
+              RDP_Link=$(grep -o 'tcp://[0-9a-z.]*:[0-9]*' /tmp/ngrok.log | head -n 1)
+          fi
+          fi
+          RDP_Ngrok=$(echo "$RDP_Link" | sed 's/tcp:\/\///')
+          
+          # 2. Tenta capturar o IP fixo do Tailscale se ele foi ativado
+          RDP_Tailscale=""
+          if [ ! -z "${{ secrets.TAILSCALE_AUTHKEY }}" ]; then
+            RDP_Tailscale=$(tailscale ip -4 2>/dev/null)
+          fi
+          
+          # 3. Exibe a tela unificada de credenciais para o Windows App
+          echo ""
+          echo "=================================================="
+          echo "🚀 SEU PC VIRTUAL ESTÁ COMPLETAMENTE LIGADO!"
+          echo "👤 USUÁRIO (Username): gamer"
+          echo "🔒 SENHA (Password): gamer"
+          echo "=================================================="
+          echo ""
+          echo "--- OPÇÃO 1: CONEXÃO VIA NGROK (Link Público) ---"
+          if [ -z "$RDP_Ngrok" ]; then
+            echo "❌ Desativado ou Token inválido."
+          else
+            echo "🔗 ENDEREÇO (Computer): $RDP_Ngrok"
+            echo "💡 Basta colar no seu Windows App de qualquer lugar."
+          fi
+          echo ""
+          echo "--- OPÇÃO 2: CONEXÃO VIA TAILSCALE (IP Fixo) ---"
+          if [ -z "$RDP_Tailscale" ]; then
+            echo "❌ Desativado ou AuthKey inválida."
+          else
+            echo "🔗 ENDEREÇO (Computer IP): $RDP_Tailscale"
+            echo "💡 Lembre-se de ligar o app do Tailscale no seu celular/PC."
+          fi
+          echo ""
+          echo "=================================================="
+          
+          # Mantém o runner ativo
+          while true; do
+              echo "[$(date)] Conexões ativas. Monitorando o Windows App..."
+              sleep 300
+          done
